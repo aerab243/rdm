@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "rdm-core",
+    "rdm-cli",
+    "rdm-desktop/src-tauri",
+]
+resolver = "2"

@@ -1,0 +1,11 @@
+[package]
+name = "rdm-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rdm-core = { path = "../rdm-core" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+indicatif = "0.17"
+anyhow = "1.0"

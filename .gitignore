@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Tauri
+rdm-desktop/node_modules
+rdm-desktop/src-tauri/target
+rdm-desktop/dist
+
+# Temp files
+20MB.zip
+.DS_Store
