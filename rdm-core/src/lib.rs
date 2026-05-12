@@ -173,16 +173,17 @@ impl Downloader {
                     let result = async {
                         let mut response = client.get(url.clone()).header(RANGE, range).send().await?;
                         
-                        let mut file = OpenOptions::new()
+                        let file = OpenOptions::new()
                             .write(true)
-                            .open(output_path.clone())
+                            .open(path.clone())
                             .await?;
-                        file.seek(std::io::SeekFrom::Start(current)).await?;
+                        let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, file);
+                        writer.seek(std::io::SeekFrom::Start(current)).await?;
 
                         while let Some(chunk) = response.chunk().await? {
-                            file.write_all(&chunk).await?;
+                            writer.write_all(&chunk).await?;
                             current += chunk.len() as u64;
-                            
+
                             // Update state
                             let mut s = state.lock().await;
                             s.segments[i].current = current;
@@ -194,7 +195,8 @@ impl Downloader {
                                 total_bytes: total_size,
                             }).await;
                         }
-                        
+                        writer.flush().await?;
+
                         let mut s = state.lock().await;
                         s.segments[i].finished = true;
                         Ok::<(), anyhow::Error>(())

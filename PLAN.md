@@ -15,10 +15,10 @@ Ce plan vise à transformer le MVP actuel de **rdm** en un gestionnaire de tél�
 *   **Buffers Dynamiques** : Optimiser la taille des buffers.
 *   **Pipeline HTTP** : S'assurer que les connexions `keep-alive` sont réutilisées.
 
-## Phase 4 : Expérience Utilisateur (CLI Pro) (Partiellement Terminée ✅)
+## Phase 4 : Expérience Utilisateur (CLI Pro) (Terminée ✅)
 *   **Statistiques en temps réel** : ✅ (Mo/s, ETA dans la barre)
-*   **Multi-fichiers** : À faire.
-*   **Interface Interactive** : À faire.
+*   **Multi-fichiers** : ✅ (Multiples URLs, support de fichier .txt)
+*   **Interface Interactive** : À faire (Pause/Annuler via clavier).
 ## Phase 5 : Finalisation Desktop
 *   **Synchronisation Core/UI** : Porter toutes les améliorations de robustesse dans le plugin Tauri.
 *   **Visualiseur de Segments** : Afficher graphiquement quels segments sont en train de se remplir.
