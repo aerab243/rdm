@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, RANGE};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -21,15 +22,29 @@ pub struct ProgressUpdate {
     pub total_bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SegmentState {
     pub start: u64,
     pub end: u64,
-    pub current: u64,
+    #[serde(skip)]
+    pub current_atomic: Arc<AtomicU64>,
+    pub current: u64, // Used for serialization
     pub finished: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Clone for SegmentState {
+    fn clone(&self) -> Self {
+        Self {
+            start: self.start,
+            end: self.end,
+            current_atomic: Arc::clone(&self.current_atomic),
+            current: self.current_atomic.load(Ordering::Relaxed),
+            finished: self.finished,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DownloadState {
     pub url: String,
     pub total_size: u64,
@@ -37,7 +52,11 @@ pub struct DownloadState {
 }
 
 impl DownloadState {
-    pub async fn save(&self, path: &std::path::Path) -> Result<()> {
+    pub async fn save(&mut self, path: &std::path::Path) -> Result<()> {
+        // Sync atomic values to serialized fields before saving
+        for seg in &mut self.segments {
+            seg.current = seg.current_atomic.load(Ordering::Relaxed);
+        }
         let content = serde_json::to_string(self)?;
         tokio::fs::write(path, content).await?;
         Ok(())
@@ -45,7 +64,10 @@ impl DownloadState {
 
     pub async fn load(path: &std::path::Path) -> Result<Self> {
         let content = tokio::fs::read_to_string(path).await?;
-        let state = serde_json::from_str(&content)?;
+        let mut state: Self = serde_json::from_str(&content)?;
+        for seg in &mut state.segments {
+            seg.current_atomic = Arc::new(AtomicU64::new(seg.current));
+        }
         Ok(state)
     }
 }
@@ -59,6 +81,7 @@ impl Downloader {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(allow_insecure)
             .user_agent("rdm/0.1.0")
+            .tcp_nodelay(true)
             .build()?;
         Ok(Self { client })
     }
@@ -116,6 +139,7 @@ impl Downloader {
                 segments.push(SegmentState {
                     start,
                     end,
+                    current_atomic: Arc::new(AtomicU64::new(start)),
                     current: start,
                     finished: false,
                 });
@@ -128,8 +152,9 @@ impl Downloader {
             }
         };
 
+        let total_size = state.total_size;
         let state = Arc::new(tokio::sync::Mutex::new(state));
-        self.download_with_state(state, config.output_path.clone(), state_path, progress_tx).await?;
+        self.download_with_state(state, total_size, config.output_path.clone(), state_path, progress_tx).await?;
 
         Ok(())
     }
@@ -137,67 +162,76 @@ impl Downloader {
     async fn download_with_state(
         &self,
         state: Arc<tokio::sync::Mutex<DownloadState>>,
+        total_size: u64,
         output_path: PathBuf,
         state_path: PathBuf,
         progress_tx: mpsc::Sender<ProgressUpdate>,
     ) -> Result<()> {
-        let (total_size, num_segments) = {
+        let (num_segments, all_segments) = {
             let s = state.lock().await;
-            (s.total_size, s.segments.len())
+            (s.segments.len(), s.segments.clone())
         };
 
         let mut handles = Vec::new();
         
         for i in 0..num_segments {
-            let state = Arc::clone(&state);
+            let state_ref = Arc::clone(&state);
             let client = self.client.clone();
             let output_path = output_path.clone();
             let progress_tx = progress_tx.clone();
+            let seg_state = all_segments[i].clone();
+            let all_segments_clone = all_segments.clone();
 
             let handle = tokio::spawn(async move {
-                let (url, _start, end, mut current, finished) = {
-                    let s = state.lock().await;
-                    let seg = &s.segments[i];
-                    (s.url.clone(), seg.start, seg.end, seg.current, seg.finished)
+                let url = {
+                    let s = state_ref.lock().await;
+                    s.url.clone()
                 };
 
-                if finished {
+                if seg_state.finished {
                     return Ok::<(), anyhow::Error>(());
                 }
 
+                let mut current = seg_state.current_atomic.load(Ordering::Relaxed);
                 let mut attempts = 0;
                 let max_attempts = 10;
 
                 loop {
-                    let range = format!("bytes={}-{}", current, end);
+                    let range = format!("bytes={}-{}", current, seg_state.end);
                     let result = async {
                         let mut response = client.get(url.clone()).header(RANGE, range).send().await?;
                         
                         let file = OpenOptions::new()
                             .write(true)
-                            .open(path.clone())
+                            .open(output_path.clone())
                             .await?;
-                        let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, file);
+                        let mut writer = tokio::io::BufWriter::with_capacity(1024 * 1024, file);
                         writer.seek(std::io::SeekFrom::Start(current)).await?;
+
+                        let mut last_update = std::time::Instant::now();
 
                         while let Some(chunk) = response.chunk().await? {
                             writer.write_all(&chunk).await?;
                             current += chunk.len() as u64;
+                            seg_state.current_atomic.store(current, Ordering::Relaxed);
+                            
+                            // Throttle updates: only send every 100ms
+                            if last_update.elapsed().as_millis() > 100 {
+                                // Calculate total progress
+                                let total_downloaded: u64 = all_segments_clone.iter()
+                                    .map(|seg| seg.current_atomic.load(Ordering::Relaxed) - seg.start)
+                                    .sum();
 
-                            // Update state
-                            let mut s = state.lock().await;
-                            s.segments[i].current = current;
-                            let total_downloaded: u64 = s.segments.iter().map(|seg| seg.current - seg.start).sum();
-                            drop(s);
-
-                            let _ = progress_tx.send(ProgressUpdate {
-                                downloaded_bytes: total_downloaded,
-                                total_bytes: total_size,
-                            }).await;
+                                let _ = progress_tx.try_send(ProgressUpdate {
+                                    downloaded_bytes: total_downloaded,
+                                    total_bytes: total_size,
+                                });
+                                last_update = std::time::Instant::now();
+                            }
                         }
                         writer.flush().await?;
-
-                        let mut s = state.lock().await;
+                        
+                        let mut s = state_ref.lock().await;
                         s.segments[i].finished = true;
                         Ok::<(), anyhow::Error>(())
                     }.await;
@@ -225,7 +259,7 @@ impl Downloader {
         let saver_handle = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let s = state_clone.lock().await;
+                let mut s = state_clone.lock().await;
                 let _ = s.save(&state_path_clone).await;
                 if s.segments.iter().all(|seg| seg.finished) {
                     break;
@@ -240,7 +274,7 @@ impl Downloader {
         saver_handle.await?;
         
         // Final save and cleanup
-        let s = state.lock().await;
+        let mut s = state.lock().await;
         s.save(&state_path).await?;
         if s.segments.iter().all(|seg| seg.finished) {
             let _ = tokio::fs::remove_file(state_path).await;
