@@ -12,6 +12,7 @@ function App() {
   const [url, setUrl] = useState("");
   const [path, setPath] = useState("download.bin");
   const [segments, setSegments] = useState(8);
+  const [allowInsecure, setAllowInsecure] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloading, setDownloading] = useState(false);
   const [status, setStatus] = useState("Ready");
@@ -33,7 +34,7 @@ function App() {
     setStatus("Downloading...");
     setProgress(0);
     try {
-      await invoke("start_download", { url, path, segments });
+      await invoke("start_download", { url, path, segments, allowInsecure });
       setStatus("Download Complete!");
     } catch (e) {
       setStatus(`Error: ${e}`);
@@ -71,6 +72,18 @@ function App() {
           value={segments}
           onChange={(e) => setSegments(parseInt(e.currentTarget.value))}
         />
+      </div>
+
+      <div className="row">
+        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={allowInsecure}
+            onChange={(e) => setAllowInsecure(e.currentTarget.checked)}
+            style={{ width: "auto", marginRight: "10px" }}
+          />
+          Allow Insecure SSL
+        </label>
       </div>
 
       <div className="row">

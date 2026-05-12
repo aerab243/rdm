@@ -9,14 +9,16 @@ async fn start_download(
     url: String,
     path: String,
     segments: usize,
+    allow_insecure: bool,
 ) -> Result<(), String> {
     let config = DownloadConfig {
         url,
         output_path: std::path::PathBuf::from(path),
         num_segments: segments,
+        allow_insecure,
     };
 
-    let downloader = Downloader::new();
+    let downloader = Downloader::new(allow_insecure).map_err(|e| e.to_string())?;
     let (tx, mut rx) = mpsc::channel::<ProgressUpdate>(100);
 
     // Spawn a task to listen for progress and emit events to the frontend
