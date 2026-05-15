@@ -1,107 +1,178 @@
-import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import "./App.css";
+import { useState, useEffect, useCallback } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
+import { TitleBar } from "@/components/layout"
+import { Sidebar, StatusBar } from "@/components/layout"
+import { DownloadItem, DownloadsHeader, EmptyState } from "@/components/downloads"
+import { AddDownloadDialog } from "@/components/downloads/add-download-dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { useDownloadStore } from "@/lib/store"
 
-interface ProgressUpdate {
-  downloaded_bytes: number;
-  total_bytes: number;
+interface ProgressPayload {
+  id: string
+  downloaded_bytes: number
+  total_bytes: number
 }
 
 function App() {
-  const [url, setUrl] = useState("");
-  const [path, setPath] = useState("download.bin");
-  const [segments, setSegments] = useState(8);
-  const [allowInsecure, setAllowInsecure] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [downloading, setDownloading] = useState(false);
-  const [status, setStatus] = useState("Ready");
+  const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const { downloads, filter, addDownload, removeDownload, updateDownload, getFilteredDownloads, getCounts, clearCompleted } = useDownloadStore()
+  
+  const filteredDownloads = getFilteredDownloads()
+  const counts = getCounts()
 
   useEffect(() => {
-    const unlisten = listen<ProgressUpdate>("download-progress", (event) => {
-      const { downloaded_bytes, total_bytes } = event.payload;
-      const percentage = (downloaded_bytes / total_bytes) * 100;
-      setProgress(percentage);
-    });
+    const unlistenProgress = listen<ProgressPayload>("download-progress", (event) => {
+      const { id, downloaded_bytes, total_bytes } = event.payload
+      updateDownload(id, {
+        downloadedBytes: downloaded_bytes,
+        totalBytes: total_bytes,
+        status: "downloading",
+      })
+    })
+
+    const unlistenCancelled = listen<{ id: string }>("download-cancelled", (event) => {
+      updateDownload(event.payload.id, { status: "paused" })
+    })
 
     return () => {
-      unlisten.then((f) => f());
-    };
-  }, []);
-
-  async function startDownload() {
-    setDownloading(true);
-    setStatus("Downloading...");
-    setProgress(0);
-    try {
-      await invoke("start_download", { url, path, segments, allowInsecure });
-      setStatus("Download Complete!");
-    } catch (e) {
-      setStatus(`Error: ${e}`);
-    } finally {
-      setDownloading(false);
+      unlistenProgress.then((fn) => fn())
+      unlistenCancelled.then((fn) => fn())
     }
-  }
+  }, [updateDownload])
+
+  const handleAddDownload = useCallback(
+    async (download: {
+      url: string
+      filename: string
+      segments: number
+      allowInsecure: boolean
+    }) => {
+      const id = addDownload({
+        url: download.url,
+        filename: download.filename,
+        totalBytes: 0,
+        allowInsecure: download.allowInsecure,
+        segments: download.segments,
+      })
+
+      try {
+        updateDownload(id, { status: "downloading" })
+        await invoke("start_download", {
+          url: download.url,
+          path: download.filename,
+          segments: download.segments,
+          allowInsecure: download.allowInsecure,
+          downloadId: id,
+        })
+        updateDownload(id, { status: "completed", totalBytes: 0 })
+      } catch (error) {
+        updateDownload(id, { status: "error", error: String(error) })
+      }
+    },
+    [addDownload, updateDownload]
+  )
+
+  const handlePause = useCallback(
+    (id: string) => {
+      updateDownload(id, { status: "paused" })
+      invoke("cancel_download", { downloadId: id }).catch(console.error)
+    },
+    [updateDownload]
+  )
+
+  const handleResume = useCallback((id: string) => {
+    updateDownload(id, { status: "downloading" })
+  }, [updateDownload])
+
+  const handleCancel = useCallback(
+    (id: string) => {
+      invoke("cancel_download", { downloadId: id }).catch(console.error)
+      removeDownload(id)
+    },
+    [removeDownload]
+  )
+
+  const handleRemove = useCallback(
+    (id: string) => {
+      removeDownload(id)
+    },
+    [removeDownload]
+  )
+
+  const handleRetry = useCallback(
+    (id: string) => {
+      const item = downloads.find((d) => d.id === id)
+      if (item) {
+        handleAddDownload({
+          url: item.url,
+          filename: item.filename,
+          segments: item.segments || 8,
+          allowInsecure: item.allowInsecure || false,
+        })
+        removeDownload(id)
+      }
+    },
+    [downloads, handleAddDownload, removeDownload]
+  )
 
   return (
-    <div className="container">
-      <h1>RDM - Download Manager</h1>
-      
-      <div className="row">
-        <input
-          placeholder="Enter URL..."
-          value={url}
-          onChange={(e) => setUrl(e.currentTarget.value)}
-        />
-      </div>
+    <div className="flex flex-col h-screen bg-[hsl(var(--background))]">
+      <TitleBar />
 
-      <div className="row">
-        <input
-          placeholder="Save as..."
-          value={path}
-          onChange={(e) => setPath(e.currentTarget.value)}
-        />
-      </div>
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar />
 
-      <div className="row">
-        <label>Segments: {segments}</label>
-        <input
-          type="range"
-          min="1"
-          max="32"
-          value={segments}
-          onChange={(e) => setSegments(parseInt(e.currentTarget.value))}
-        />
-      </div>
-
-      <div className="row">
-        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={allowInsecure}
-            onChange={(e) => setAllowInsecure(e.currentTarget.checked)}
-            style={{ width: "auto", marginRight: "10px" }}
+        <main className="flex-1 flex flex-col overflow-hidden">
+          <DownloadsHeader
+            onAddDownload={() => setAddDialogOpen(true)}
+            onClearCompleted={counts.completed > 0 ? clearCompleted : undefined}
+            totalCount={filteredDownloads.length}
           />
-          Allow Insecure SSL
-        </label>
+          
+          <ScrollArea className="flex-1">
+            {filteredDownloads.length === 0 ? (
+              <EmptyState
+                title={filter === "all" ? "No downloads" : `No ${filter} downloads`}
+                description={
+                  filter === "all"
+                    ? "Add a download to get started"
+                    : `You don't have any ${filter} downloads`
+                }
+                action={
+                  filter === "all"
+                    ? { label: "Add Download", onClick: () => setAddDialogOpen(true) }
+                    : undefined
+                }
+              />
+            ) : (
+              <div className="p-4 space-y-2">
+                {filteredDownloads.map((item) => (
+                  <DownloadItem
+                    key={item.id}
+                    item={item}
+                    onPause={handlePause}
+                    onResume={handleResume}
+                    onCancel={handleCancel}
+                    onRetry={handleRetry}
+                    onRemove={handleRemove}
+                  />
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+        </main>
       </div>
 
-      <div className="row">
-        <button onClick={startDownload} disabled={downloading}>
-          {downloading ? "Downloading..." : "Start Download"}
-        </button>
-      </div>
+      <StatusBar />
 
-      <div className="progress-container">
-        <div 
-          className="progress-bar" 
-          style={{ width: `${progress}%` }}
-        ></div>
-      </div>
-      
-      <p>{status}</p>
+      <AddDownloadDialog
+        open={addDialogOpen}
+        onOpenChange={setAddDialogOpen}
+        onAdd={handleAddDownload}
+      />
     </div>
-  );
+  )
 }
 
-export default App;
+export default App
