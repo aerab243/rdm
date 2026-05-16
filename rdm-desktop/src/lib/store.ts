@@ -27,10 +27,14 @@ interface DownloadStore {
   updateDownload: (id: string, updates: Partial<DownloadItem>) => void
   setFilter: (filter: FilterCategory) => void
   clearCompleted: () => void
+  startAll: () => void
+  stopAll: () => void
   
   // Computed
   getFilteredDownloads: () => DownloadItem[]
   getCounts: () => Record<FilterCategory, number>
+  getTotalSpeed: () => number
+  getActiveDownloads: () => DownloadItem[]
 }
 
 export const useDownloadStore = create<DownloadStore>((set, get) => ({
@@ -70,6 +74,22 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     }))
   },
 
+  startAll: () => {
+    set((state) => ({
+      downloads: state.downloads.map((d) =>
+        d.status === 'paused' ? { ...d, status: 'downloading' as const } : d
+      ),
+    }))
+  },
+
+  stopAll: () => {
+    set((state) => ({
+      downloads: state.downloads.map((d) =>
+        d.status === 'downloading' ? { ...d, status: 'paused' as const } : d
+      ),
+    }))
+  },
+
   getFilteredDownloads: () => {
     const { downloads, filter } = get()
     if (filter === 'all') return downloads
@@ -85,5 +105,20 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       completed: downloads.filter((d) => d.status === 'completed').length,
       error: downloads.filter((d) => d.status === 'error').length,
     }
+  },
+
+  getTotalSpeed: () => {
+    const { downloads } = get()
+    return downloads
+      .filter((d) => d.status === 'downloading' && d.speed)
+      .reduce((acc, d) => {
+        const match = d.speed?.match(/[\d.]+/)
+        return acc + (match ? parseFloat(match[0]) * 1024 * 1024 : 0)
+      }, 0)
+  },
+
+  getActiveDownloads: () => {
+    const { downloads } = get()
+    return downloads.filter((d) => d.status === 'downloading' || d.status === 'paused')
   },
 }))

@@ -1,3 +1,5 @@
 export { TitleBar } from "./title-bar"
 export { Sidebar } from "./sidebar"
 export { StatusBar } from "./status-bar"
+export { CategorySidebar } from "./category-sidebar"
+export { DownloadToolbar } from "./download-toolbar"
